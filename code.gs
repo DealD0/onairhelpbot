@@ -29,6 +29,10 @@ function doGet(e) {
       return jsonResponse({ error: 'Invalid section' });
     }
 
+    if (!SPREADSHEET_ID || SPREADSHEET_ID === 'YOUR_SPREADSHEET_ID_HERE') {
+      return jsonResponse({ error: 'SPREADSHEET_ID не задан в code.gs — впиши ID своей Google-таблицы' });
+    }
+
     const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
     const sheet = getOrCreateSheet(ss, sheetName);
     const data = sheet.getDataRange().getValues();
@@ -64,10 +68,14 @@ function doPost(e) {
       return jsonResponse({ error: 'Invalid section' });
     }
 
+    if (!SPREADSHEET_ID || SPREADSHEET_ID === 'YOUR_SPREADSHEET_ID_HERE') {
+      return jsonResponse({ error: 'SPREADSHEET_ID не задан в code.gs — впиши ID своей Google-таблицы' });
+    }
+
     var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
     var sheet = getOrCreateSheet(ss, sheetName);
 
-    if (action === 'add') {
+    if (action === 'add' || action === 'upload') {
       return addPhotos(sheet, data);
     } else if (action === 'delete') {
       return deletePhotos(sheet, data);
@@ -82,7 +90,7 @@ function doPost(e) {
 // ─── Add photos ──────────────────────────────────────────────────────────────
 function addPhotos(sheet, data) {
   var photos = data.photos || [];
-  var userName = data.userName || 'unknown';
+  var userName = data.userName || data.user || 'unknown';
   var now = new Date();
 
   for (var i = 0; i < photos.length; i++) {

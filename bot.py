@@ -96,6 +96,21 @@ def authorize_request(init_data_raw: str) -> tuple[dict | None, str | None]:
 
 
 # ─── API Handlers ─────────────────────────────────────────────────────────────
+async def _gs_json(resp) -> dict:
+    """Парсит ответ Google Apps Script как JSON. Если пришёл не JSON (например,
+    HTML логина/ошибки Google) — кидаем понятную ошибку вместо невнятного
+    'Expecting value: line 1 column 1 (char 0)'."""
+    text = await resp.text()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        snippet = " ".join(text.split())[:200]
+        raise RuntimeError(
+            "Google Script вернул не JSON. Проверь GOOGLE_SCRIPT_URL и что веб-приложение "
+            f"задеплоено с доступом 'Anyone'. Ответ (HTTP {resp.status}): {snippet}"
+        )
+
+
 async def handle_get_photos(request: web.Request) -> web.Response:
     """GET /api/photos?section=investor — get photos for a section."""
     section = request.query.get("section", "")
@@ -105,7 +120,7 @@ async def handle_get_photos(request: web.Request) -> web.Response:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(f"{GOOGLE_SCRIPT_URL}?action=list&section={section}") as resp:
-                data = await resp.json(content_type=None)
+                data = await _gs_json(resp)
         return web.json_response(data)
     except Exception as e:
         log.error(f"Get photos error: {e}")
@@ -173,7 +188,10 @@ async def handle_upload(request: web.Request) -> web.Response:
                 "user": user.get("first_name", "Unknown"),
             }
             async with session.post(GOOGLE_SCRIPT_URL, json=payload) as resp:
-                gs_result = await resp.json(content_type=None)
+                gs_result = await _gs_json(resp)
+
+        if isinstance(gs_result, dict) and gs_result.get("error"):
+            return web.json_response({"error": f"Google Sheets: {gs_result['error']}"}, status=502)
 
         log.info(f"User {user.get('id')} uploaded {len(uploaded)} photos to {section}")
         return web.json_response({"status": "ok", "photos": uploaded})
@@ -203,7 +221,7 @@ async def handle_delete(request: web.Request) -> web.Response:
         async with aiohttp.ClientSession() as session:
             payload = {"action": "delete", "section": section, "rowIds": row_ids}
             async with session.post(GOOGLE_SCRIPT_URL, json=payload) as resp:
-                gs_result = await resp.json(content_type=None)
+                gs_result = await _gs_json(resp)
 
         log.info(f"User {user.get('id')} deleted rows {row_ids} from {section}")
         return web.json_response({"status": "ok"})
@@ -233,7 +251,7 @@ async def handle_reorder(request: web.Request) -> web.Response:
         async with aiohttp.ClientSession() as session:
             payload = {"action": "reorder", "section": section, "rowIds": row_ids}
             async with session.post(GOOGLE_SCRIPT_URL, json=payload) as resp:
-                gs_result = await resp.json(content_type=None)
+                gs_result = await _gs_json(resp)
 
         log.info(f"User {user.get('id')} reordered photos in {section}")
         return web.json_response({"status": "ok"})
