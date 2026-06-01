@@ -29,7 +29,7 @@ function doGet(e) {
       return jsonResponse({ error: 'Invalid section' });
     }
 
-    if (!SPREADSHEET_ID || SPREADSHEET_ID === 'YOUR_SPREADSHEET_ID_HERE') {
+    if (!SPREADSHEET_ID || SPREADSHEET_ID.indexOf('YOUR_') === 0) {
       return jsonResponse({ error: 'SPREADSHEET_ID не задан в code.gs — впиши ID своей Google-таблицы' });
     }
 
@@ -68,7 +68,7 @@ function doPost(e) {
       return jsonResponse({ error: 'Invalid section' });
     }
 
-    if (!SPREADSHEET_ID || SPREADSHEET_ID === 'YOUR_SPREADSHEET_ID_HERE') {
+    if (!SPREADSHEET_ID || SPREADSHEET_ID.indexOf('YOUR_') === 0) {
       return jsonResponse({ error: 'SPREADSHEET_ID не задан в code.gs — впиши ID своей Google-таблицы' });
     }
 
