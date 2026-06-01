@@ -79,6 +79,8 @@ function doPost(e) {
       return addPhotos(sheet, data);
     } else if (action === 'delete') {
       return deletePhotos(sheet, data);
+    } else if (action === 'reorder') {
+      return reorderPhotos(sheet, data);
     }
 
     return jsonResponse({ error: 'Unknown action' });
@@ -108,15 +110,15 @@ function addPhotos(sheet, data) {
   return jsonResponse({ status: 'ok', added: photos.length });
 }
 
-// ─── Delete photos by row IDs ────────────────────────────────────────────────
+// ─── Delete photos by row numbers ─────────────────────────────────────────────
 function deletePhotos(sheet, data) {
   var rowIds = data.rowIds || [];
-  // Sort descending so deleting doesn't shift subsequent rows
+  // Сортируем по убыванию, чтобы удаление не сдвигало следующие строки
   rowIds.sort(function(a, b) { return b - a; });
 
   var deleted = 0;
   for (var i = 0; i < rowIds.length; i++) {
-    var rowNum = rowIds[i];
+    var rowNum = Number(rowIds[i]);
     if (rowNum > 1 && rowNum <= sheet.getLastRow()) {
       sheet.deleteRow(rowNum);
       deleted++;
@@ -124,6 +126,43 @@ function deletePhotos(sheet, data) {
   }
 
   return jsonResponse({ status: 'ok', deleted: deleted });
+}
+
+// ─── Reorder rows by given order of row numbers ───────────────────────────────
+function reorderPhotos(sheet, data) {
+  var order = (data.rowIds || []).map(Number);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2 || order.length === 0) {
+    return jsonResponse({ status: 'ok', reordered: 0 });
+  }
+
+  var numCols = HEADERS.length;
+  // Читаем все строки данных (без заголовка) в карту: номер строки -> значения
+  var values = sheet.getRange(2, 1, lastRow - 1, numCols).getValues();
+  var byRow = {};
+  for (var i = 0; i < values.length; i++) {
+    byRow[i + 2] = values[i];
+  }
+
+  // Собираем новый порядок: сначала пришедшие rowIds, потом всё, что не попало
+  var newRows = [];
+  var used = {};
+  for (var j = 0; j < order.length; j++) {
+    var r = order[j];
+    if (byRow[r] && !used[r]) {
+      newRows.push(byRow[r]);
+      used[r] = true;
+    }
+  }
+  for (var k = 2; k <= lastRow; k++) {
+    if (byRow[k] && !used[k]) {
+      newRows.push(byRow[k]);
+    }
+  }
+
+  // Перезаписываем данные под заголовком
+  sheet.getRange(2, 1, newRows.length, numCols).setValues(newRows);
+  return jsonResponse({ status: 'ok', reordered: newRows.length });
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
