@@ -184,7 +184,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 
 <script>
 // ─── CONFIG ───
-const API_BASE = 'https://onairhelpbot-production.up.railway.app';
+// Бот сам отдаёт это приложение (роут "/" в bot.py), поэтому запросы к API идут
+// на тот же домен — править URL вручную больше НЕ нужно.
+// Исключение: если ты хостишь index.html отдельно на GitHub Pages — впиши сюда
+// https-домен своего Railway-сервиса (вкладка Settings → Networking → Public Networking).
+const RAILWAY_API_URL = ''; // напр. 'https://onairhelpbot-production-xxxx.up.railway.app'
+const API_BASE = location.hostname.endsWith('github.io') ? RAILWAY_API_URL : '';
 
 // ─── Telegram Web App ───
 const tg = window.Telegram.WebApp;

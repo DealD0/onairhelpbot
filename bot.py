@@ -239,6 +239,15 @@ async def handle_reorder(request: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=500)
 
 
+# ─── Mini App (статика) ───────────────────────────────────────────────────────
+INDEX_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
+
+
+async def handle_index(request: web.Request) -> web.Response:
+    """Отдаёт Mini App (index.html) с того же домена, что и API — без хардкода URL."""
+    return web.FileResponse(INDEX_HTML)
+
+
 # ─── CORS middleware ──────────────────────────────────────────────────────────
 @web.middleware
 async def cors_middleware(request, handler):
@@ -316,15 +325,12 @@ async def main():
 
     # HTTP API server
     web_app = web.Application(middlewares=[cors_middleware])
+    web_app.router.add_get("/", handle_index)
     web_app.router.add_get("/api/photos", handle_get_photos)
     web_app.router.add_post("/api/upload", handle_upload)
     web_app.router.add_post("/api/delete", handle_delete)
     web_app.router.add_post("/api/reorder", handle_reorder)
     web_app.router.add_route("OPTIONS", "/api/{tail:.*}", lambda r: web.Response())
-
-    runner = web.AppRunner(web_app)
-    await runner.setup()
-    site = web.TCPSite(runner, SERVER_HOST, SERVER_PORT)
 
     log.info(f"Authorized users: {ALLOWED_USER_IDS}")
     log.info(f"API server starting on {SERVER_HOST}:{SERVER_PORT}")
