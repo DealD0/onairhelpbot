@@ -184,12 +184,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 
 <script>
 // ─── CONFIG ───
-// Бот сам отдаёт это приложение (роут "/" в bot.py), поэтому запросы к API идут
-// на тот же домен — править URL вручную больше НЕ нужно.
-// Исключение: если ты хостишь index.html отдельно на GitHub Pages — впиши сюда
-// https-домен своего Railway-сервиса (вкладка Settings → Networking → Public Networking).
+// Бот сам отдаёт это приложение (роут "/" в bot.py), поэтому к API обращаемся
+// по тому же домену — через АБСОЛЮТНЫЙ адрес (location.origin).
+// Важно: в Telegram Desktop относительные пути ('/api/...') в fetch не работают
+// ("The string did not match the expected pattern"), поэтому именно полный URL.
+// Исключение: если хостишь index.html отдельно на GitHub Pages — впиши сюда
+// https-домен своего Railway-сервиса (Settings → Networking → Public Networking).
 const RAILWAY_API_URL = ''; // напр. 'https://onairhelpbot-production-xxxx.up.railway.app'
-const API_BASE = location.hostname.endsWith('github.io') ? RAILWAY_API_URL : '';
+const API_BASE = location.hostname.endsWith('github.io') ? RAILWAY_API_URL : location.origin;
 
 // ─── Telegram Web App ───
 const tg = window.Telegram.WebApp;
