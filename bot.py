@@ -19,6 +19,10 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 IMGBB_API_KEY = os.getenv("IMGBB_API_KEY", "").strip()
 GOOGLE_SCRIPT_URL = os.getenv("GOOGLE_SCRIPT_URL", "").strip()
 MINI_APP_URL = os.getenv("MINI_APP_URL", "").strip()
+# Telegram принимает в WebApp-кнопке только https-ссылку. Если в переменной
+# указали голый домен (без схемы) — подставляем https:// сами, чтобы не падать.
+if MINI_APP_URL and not MINI_APP_URL.startswith(("http://", "https://")):
+    MINI_APP_URL = "https://" + MINI_APP_URL
 SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = int(os.getenv("SERVER_PORT", "8080"))
 ALLOWED_USER_IDS_RAW = os.getenv("ALLOWED_USER_IDS", "").strip()
