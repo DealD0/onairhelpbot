@@ -285,8 +285,7 @@ async def handle_health(request: web.Request) -> web.Response:
     Отдельно показывает состояние поллера: HTTP-сервер может жить, когда
     Telegram-часть уже умерла, и снаружи это выглядело бы как «сервис Online».
     """
-    updater = request.app["bot_app"].updater
-    polling = bool(updater and updater.running)
+    polling, _ = polling_state(request.app["bot_app"])
     return web.json_response(
         {"status": "ok" if polling else "degraded", "telegram_polling": polling},
         status=200 if polling else 503,
@@ -363,6 +362,24 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
+def polling_state(bot_app: Application) -> tuple[bool, BaseException | None]:
+    """Жив ли поллер Telegram и чем он умер.
+
+    `updater.running` — всего лишь флаг: PTB не вешает done-callback на свою
+    задачу поллинга, поэтому если задача падает, флаг остаётся True, а
+    трейсбек не печатается вообще (ссылка на задачу жива, и asyncio молчит).
+    Именно так бот и умирает «без причины в логах» — значит смотрим на задачу.
+    """
+    updater = bot_app.updater
+    if not updater or not updater.running:
+        return False, None
+    # Приватное имя PTB: если его переименуют — вернём None и поверим флагу.
+    task = getattr(updater, "_Updater__polling_task", None)
+    if task is None or not task.done():
+        return True, None
+    return False, (None if task.cancelled() else task.exception())
+
+
 async def start_polling(bot_app: Application) -> None:
     await bot_app.updater.start_polling(
         allowed_updates=Update.ALL_TYPES,
@@ -370,11 +387,22 @@ async def start_polling(bot_app: Application) -> None:
     )
 
 
+async def restart_polling(bot_app: Application) -> None:
+    """Поднимает поллер заново. Сначала обязательно stop(): пока флаг
+    `running` не сброшен, start_polling() ругнётся «already running», а сам
+    stop() может перевыбросить исключение упавшей задачи — глотаем его."""
+    if bot_app.updater.running:
+        try:
+            await bot_app.updater.stop()
+        except Exception:
+            log.warning("stop() упавшего поллера прошёл с ошибкой", exc_info=True)
+    await start_polling(bot_app)
+
+
 async def watchdog(bot_app: Application, fatal: asyncio.Event) -> None:
     """Следит, что поллер Telegram жив.
 
-    Апдейтер может остановиться сам (сеть, конфликт двух инстансов, ошибка
-    внутри PTB), и тогда процесс продолжает жить: HTTP-сервер отвечает,
+    Поллер может умереть, а процесс продолжит жить: HTTP-сервер отвечает,
     Railway считает сервис здоровым, а бот молчит. Пробуем поднять поллер,
     и если не выходит — валимся, чтобы Railway перезапустил контейнер.
     """
@@ -383,7 +411,8 @@ async def watchdog(bot_app: Application, fatal: asyncio.Event) -> None:
     while True:
         await asyncio.sleep(WATCHDOG_INTERVAL)
 
-        if bot_app.updater.running:
+        alive, error = polling_state(bot_app)
+        if alive:
             failures = 0
             now = asyncio.get_running_loop().time()
             if now - heartbeat_at >= 3600:
@@ -392,9 +421,14 @@ async def watchdog(bot_app: Application, fatal: asyncio.Event) -> None:
             continue
 
         failures += 1
-        log.error("Поллер Telegram остановился — попытка %s/%s", failures, WATCHDOG_MAX_RETRIES)
+        log.error(
+            "Поллер Telegram не работает — попытка %s/%s",
+            failures,
+            WATCHDOG_MAX_RETRIES,
+            exc_info=error,
+        )
         try:
-            await start_polling(bot_app)
+            await restart_polling(bot_app)
         except Exception:
             log.exception("Не удалось перезапустить поллер")
         else:
