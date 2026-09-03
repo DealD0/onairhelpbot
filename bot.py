@@ -26,8 +26,17 @@ if MINI_APP_URL and not MINI_APP_URL.startswith(("http://", "https://")):
 SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = int(os.getenv("SERVER_PORT", "8080"))
 ALLOWED_USER_IDS_RAW = os.getenv("ALLOWED_USER_IDS", "").strip()
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+# Telegram держит long-poll до 50 сек. Чем длиннее, тем меньше запросов и логов.
+POLL_TIMEOUT = int(os.getenv("POLL_TIMEOUT", "30"))
+WATCHDOG_INTERVAL = int(os.getenv("WATCHDOG_INTERVAL", "60"))
+WATCHDOG_MAX_RETRIES = int(os.getenv("WATCHDOG_MAX_RETRIES", "3"))
 
-logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
+logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=LOG_LEVEL)
+# httpx пишет INFO на каждый getUpdates: при long-poll это строка раз в
+# POLL_TIMEOUT секунд (тысячи в сутки), в которых тонут реальные ошибки.
+for noisy in ("httpx", "httpcore"):
+    logging.getLogger(noisy).setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
 
 # Проверка наличия переменных при запуске
@@ -270,6 +279,20 @@ async def handle_index(request: web.Request) -> web.Response:
     return web.FileResponse(INDEX_HTML)
 
 
+async def handle_health(request: web.Request) -> web.Response:
+    """GET /health — без обращений к БД и внешним API.
+
+    Отдельно показывает состояние поллера: HTTP-сервер может жить, когда
+    Telegram-часть уже умерла, и снаружи это выглядело бы как «сервис Online».
+    """
+    updater = request.app["bot_app"].updater
+    polling = bool(updater and updater.running)
+    return web.json_response(
+        {"status": "ok" if polling else "degraded", "telegram_polling": polling},
+        status=200 if polling else 503,
+    )
+
+
 # ─── CORS middleware ──────────────────────────────────────────────────────────
 @web.middleware
 async def cors_middleware(request, handler):
@@ -334,20 +357,73 @@ async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Доступ запрещён.")
 
 
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Логирует ошибку хендлера с трейсбеком, иначе она уходит в никуда."""
+    log.error("Ошибка при обработке апдейта %s", update, exc_info=context.error)
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
-async def main():
+async def start_polling(bot_app: Application) -> None:
+    await bot_app.updater.start_polling(
+        allowed_updates=Update.ALL_TYPES,
+        timeout=POLL_TIMEOUT,
+    )
+
+
+async def watchdog(bot_app: Application, fatal: asyncio.Event) -> None:
+    """Следит, что поллер Telegram жив.
+
+    Апдейтер может остановиться сам (сеть, конфликт двух инстансов, ошибка
+    внутри PTB), и тогда процесс продолжает жить: HTTP-сервер отвечает,
+    Railway считает сервис здоровым, а бот молчит. Пробуем поднять поллер,
+    и если не выходит — валимся, чтобы Railway перезапустил контейнер.
+    """
+    failures = 0
+    heartbeat_at = 0.0
+    while True:
+        await asyncio.sleep(WATCHDOG_INTERVAL)
+
+        if bot_app.updater.running:
+            failures = 0
+            now = asyncio.get_running_loop().time()
+            if now - heartbeat_at >= 3600:
+                heartbeat_at = now
+                log.info("Жив: поллер Telegram работает")
+            continue
+
+        failures += 1
+        log.error("Поллер Telegram остановился — попытка %s/%s", failures, WATCHDOG_MAX_RETRIES)
+        try:
+            await start_polling(bot_app)
+        except Exception:
+            log.exception("Не удалось перезапустить поллер")
+        else:
+            log.info("Поллер Telegram восстановлен")
+            failures = 0
+            continue
+
+        if failures >= WATCHDOG_MAX_RETRIES:
+            log.error("Поллер не поднимается — выходим, пусть Railway перезапустит контейнер")
+            fatal.set()
+            return
+
+
+async def main() -> int:
     if not check_env():
-        return
+        return 1
     # Telegram bot
     bot_app = Application.builder().token(BOT_TOKEN).build()
     bot_app.add_handler(CommandHandler("start", cmd_start))
     bot_app.add_handler(CommandHandler("help", cmd_help))
     bot_app.add_handler(CommandHandler("myid", cmd_myid))
     bot_app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, fallback))
+    bot_app.add_error_handler(on_error)
 
     # HTTP API server
     web_app = web.Application(middlewares=[cors_middleware])
+    web_app["bot_app"] = bot_app
     web_app.router.add_get("/", handle_index)
+    web_app.router.add_get("/health", handle_health)
     web_app.router.add_get("/api/photos", handle_get_photos)
     web_app.router.add_post("/api/upload", handle_upload)
     web_app.router.add_post("/api/delete", handle_delete)
@@ -363,23 +439,33 @@ async def main():
     site = web.TCPSite(runner, SERVER_HOST, SERVER_PORT)
     await site.start()
 
+    exit_code = 0
+
     # Start Telegram bot using context manager (handles init/shutdown)
     async with bot_app:
         await bot_app.start()
-        await bot_app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        await start_polling(bot_app)
         log.info("🚀 Бот и API сервер запущены!")
-        
-        # Keep running until interrupted
+
+        fatal = asyncio.Event()
+        guard = asyncio.create_task(watchdog(bot_app, fatal))
         try:
-            while True:
-                await asyncio.sleep(3600)
+            await fatal.wait()
+            exit_code = 1
         except (KeyboardInterrupt, asyncio.CancelledError):
             log.info("Остановка...")
         finally:
-            await bot_app.updater.stop()
+            guard.cancel()
+            if bot_app.updater.running:
+                await bot_app.updater.stop()
             await bot_app.stop()
             await runner.cleanup()
 
+    return exit_code
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        raise SystemExit(asyncio.run(main()))
+    except KeyboardInterrupt:
+        pass
